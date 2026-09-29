@@ -33,9 +33,27 @@ services:
       - key: LANGFUSE_ENABLED
         value: "false"
 
+  # =========================================================================
+  # 2. Next.js Frontend Web Service (Free Tier)
+  # =========================================================================
+  - type: web
+    name: enterprise-rag-frontend
+    runtime: node
+    rootDir: frontend
+    plan: free
+    region: oregon
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_PUBLIC_API_URL
+        sync: false
+
 databases:
   # =========================================================================
-  # 2. PostgreSQL Managed Database (Free Tier)
+  # 3. PostgreSQL Managed Database (Free Tier)
   # =========================================================================
   - name: enterprise-rag-db
     databaseName: enterprise_rag

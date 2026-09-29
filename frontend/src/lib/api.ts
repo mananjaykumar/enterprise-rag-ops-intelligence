@@ -3,8 +3,10 @@
  * Connects Next.js frontend to FastAPI backend (:8000)
  */
 
-export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+const rawApiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+export const API_BASE_URL = rawApiUrl.endsWith("/api/v1")
+  ? rawApiUrl
+  : `${rawApiUrl.replace(/\/+$/, "")}/api/v1`;
 
 const STORAGE_TOKEN_KEY = "aura_enterprise_jwt_token";
 
