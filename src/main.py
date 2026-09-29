@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -18,6 +19,7 @@ from src.core.config import get_settings
 from src.db.base import Base
 from src.db.session import engine
 from src.services.observability import get_observability_service
+from src.workers.ingestion_worker import IngestionWorker
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("enterprise_rag")
@@ -48,10 +50,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error("Database initialization failed: %s", exc)
         raise exc
 
+    # 3. Start embedded ingestion worker in background (enables 100% free single-container deployments)
+    worker = None
+    worker_task = None
+    try:
+        worker = IngestionWorker()
+        worker_task = asyncio.create_task(worker.run())
+        logger.info("Embedded Ingestion Worker background task started.")
+    except Exception as exc:
+        logger.warning("Could not launch embedded ingestion worker: %s", exc)
+
     yield  # Application accepts incoming HTTP requests
 
-    # 2. Graceful Shutdown: Dispose DB connection pool
+    # 4. Graceful Shutdown
     logger.info("Shutting down %s...", settings.PROJECT_NAME)
+    if worker:
+        worker.stop()
+    if worker_task:
+        worker_task.cancel()
     get_observability_service().flush()
     await engine.dispose()
     logger.info("Database connection pool closed.")

@@ -4,16 +4,15 @@ This guide walks you through deploying the Enterprise RAG & Operations Intellige
 
 ---
 
-## 1. What Render Provisions
+## 1. 100% Free Tier Architecture ($0 / No Credit Card Required)
 
-Our configuration deploys three interconnected components:
+Render charges for "Starter" plans and background worker services. To ensure your deployment is **100% Free**:
 
-1. **PostgreSQL Database** (`enterprise-rag-db`):
-   - Managed PostgreSQL 16 database with `pgvector` extension enabled.
-2. **Web Service** (`enterprise-rag-api`):
-   - Runs the FastAPI application with dynamic `$PORT` binding and healthcheck on `/health`.
-3. **Background Worker** (`enterprise-rag-worker`):
-   - Runs `python3 -m src.workers.ingestion_worker` to process document parsing, chunking, and embedding.
+1. **Free Web Service** (`plan: free`):
+   - Runs the FastAPI application with dynamic `$PORT` binding and `/health` probe.
+   - **Embedded Ingestion Worker**: The background document ingestion worker is embedded directly inside FastAPI's async lifespan, so you don't need a separate paid worker service!
+2. **Free Managed PostgreSQL** (`plan: free`):
+   - Render provisions a free PostgreSQL 16 database with `pgvector` support.
 
 ---
 
