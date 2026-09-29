@@ -42,7 +42,7 @@ services:
     rootDir: frontend
     plan: free
     region: oregon
-    buildCommand: npm install && npm run build
+    buildCommand: npm install --include=dev && npm run build
     startCommand: npm start
     autoDeploy: true
     envVars:
