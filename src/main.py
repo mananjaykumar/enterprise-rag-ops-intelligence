@@ -1,7 +1,9 @@
 import asyncio
 import logging
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +19,7 @@ from src.api.v1.retrieval import router as retrieval_router
 from src.api.v1.sql import router as sql_router
 from src.core.config import get_settings
 from src.db.base import Base
-from src.db.session import engine
+from src.db.session import AsyncSessionLocal, engine
 from src.services.observability import get_observability_service
 from src.workers.ingestion_worker import IngestionWorker
 
@@ -46,11 +48,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
                 await conn.run_sync(Base.metadata.create_all)
                 logger.info("Database schemas, pgvector extension, and tables verified/created.")
+
+        # 3. Automatic Seeding for Free Hosting Platforms (e.g. Render Free where Web Shell is disabled)
+        if os.getenv("AUTO_SEED", "false").lower() == "true":
+            try:
+                from scripts.seed_operational_data import seed_admin_user, seed_operational_entities
+                async with AsyncSessionLocal() as session:
+                    await seed_admin_user(session)
+                    counts = await seed_operational_entities(session)
+                    await session.commit()
+                    logger.info("Automatic database seeding completed on startup: %s", counts)
+            except Exception as seed_err:
+                logger.warning("Automatic startup seeding encountered an issue: %s", seed_err)
+
     except Exception as exc:
         logger.error("Database initialization failed: %s", exc)
         raise exc
 
-    # 3. Start embedded ingestion worker in background (enables 100% free single-container deployments)
+    # 4. Start embedded ingestion worker in background (enables 100% free single-container deployments)
     worker = None
     worker_task = None
     try:
@@ -98,6 +113,30 @@ def create_application() -> FastAPI:
     @app.get("/health", tags=["Health & Readiness"], include_in_schema=False)
     async def root_health() -> dict[str, str]:
         return {"status": "healthy"}
+
+    # HTTP Trigger for Database Seeding (Ideal for Serverless / Free Tier where Shell is disabled)
+    @app.post("/api/v1/admin/seed", tags=["Administration"])
+    async def trigger_database_seed() -> dict[str, Any]:
+        """Seeds or resets operational demo database records."""
+        try:
+            from scripts.seed_operational_data import (
+                clear_operational_data,
+                seed_admin_user,
+                seed_operational_entities,
+            )
+            async with AsyncSessionLocal() as session:
+                await seed_admin_user(session)
+                await clear_operational_data(session)
+                counts = await seed_operational_entities(session)
+                await session.commit()
+            return {
+                "status": "success",
+                "message": "Operational database seeded successfully",
+                "counts": counts,
+            }
+        except Exception as e:
+            logger.error("Seeding endpoint failed: %s", e)
+            return {"status": "error", "message": str(e)}
 
     # Register API Routers
     app.include_router(health_router, prefix="/api/v1")

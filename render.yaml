@@ -32,6 +32,8 @@ services:
         generateValue: true
       - key: LANGFUSE_ENABLED
         value: "false"
+      - key: AUTO_SEED
+        value: "true"
 
   # =========================================================================
   # 2. Next.js Frontend Web Service (Free Tier)
