@@ -1,0 +1,33 @@
+# Virtual Environments & Caches
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Git & IDE Metadata
+.git/
+.gitignore
+.gemini/
+.idea/
+.vscode/
+
+# Local Environment & Secrets
+.env
+*.pem
+*.key
+
+# Local Data, Raw Files & Logs
+data/raw/
+*.log
+
+# Documentation & Scratch Files
+docs/
+scratch/
+
+# Next.js Frontend
+frontend/

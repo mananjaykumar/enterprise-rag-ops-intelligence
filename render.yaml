@@ -1,0 +1,71 @@
+services:
+  # =========================================================================
+  # 1. FastAPI Backend Web Service
+  # =========================================================================
+  - type: web
+    name: enterprise-rag-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    region: oregon
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: enterprise-rag-db
+          property: connectionString
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ACTIVE_EMBEDDING_MODEL
+        value: gemini-embedding-001
+      - key: EMBEDDING_DIMENSION
+        value: "768"
+      - key: ACTIVE_LLM_MODEL
+        value: gemini-3.5-flash-lite
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: LANGFUSE_ENABLED
+        value: "false"
+
+  # =========================================================================
+  # 2. Background Document Ingestion Worker
+  # =========================================================================
+  - type: worker
+    name: enterprise-rag-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python3 -m src.workers.ingestion_worker
+    plan: starter
+    region: oregon
+    autoDeploy: true
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: enterprise-rag-db
+          property: connectionString
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ACTIVE_EMBEDDING_MODEL
+        value: gemini-embedding-001
+      - key: EMBEDDING_DIMENSION
+        value: "768"
+
+databases:
+  # =========================================================================
+  # 3. PostgreSQL Managed Database with pgvector
+  # =========================================================================
+  - name: enterprise-rag-db
+    databaseName: enterprise_rag
+    user: enterprise_user
+    plan: starter
+    region: oregon
+    postgresMajorVersion: 16

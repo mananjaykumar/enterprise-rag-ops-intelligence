@@ -1,0 +1,58 @@
+{
+  "version": "1.0.0",
+  "rag_cases": [
+    {
+      "query_id": "RAG-001",
+      "question": "What is the maximum daily allowance limit for employee hotel lodging under the corporate travel policy?",
+      "expected_document_title": "Corporate Travel and Expense Policy",
+      "expected_keywords": ["daily spending allowance", "lodging", "200.00", "hotel"],
+      "ground_truth_answer": "The standard daily spending allowance limit for employee hotel lodging is exactly $200.00 per night. Any lodging claim exceeding $200.00 per day without prior executive approval is strictly non-compliant."
+    },
+    {
+      "query_id": "RAG-002",
+      "question": "What are the security requirements for company laptops and passwords?",
+      "expected_document_title": "Equipment and Information Security Policy",
+      "expected_keywords": ["encryption", "passwords", "16 characters", "laptops"],
+      "ground_truth_answer": "All company laptops must have full disk encryption enabled and passwords must be at least 16 characters long."
+    },
+    {
+      "query_id": "RAG-003",
+      "question": "What is the visitor badge registration procedure?",
+      "expected_document_title": "Office Facility and Visitor Guidelines",
+      "expected_keywords": ["visitor", "reception desk", "visitor badge"],
+      "ground_truth_answer": "All visitors must register at the reception desk and wear a visitor badge at all times while on company premises."
+    }
+  ],
+  "sql_cases": [
+    {
+      "query_id": "SQL-001",
+      "prompt": "What is the annual budget of the Engineering department?",
+      "expected_tables": ["departments"],
+      "expected_columns": ["name", "annual_budget"],
+      "expected_sql_fragment": "FROM departments"
+    },
+    {
+      "query_id": "SQL-002",
+      "prompt": "List all active employees in the Engineering department with their role titles.",
+      "expected_tables": ["employees", "departments"],
+      "expected_columns": ["full_name", "role_title"],
+      "expected_sql_fragment": "JOIN departments"
+    },
+    {
+      "query_id": "SQL-003",
+      "prompt": "What is the total amount of approved travel expenses recorded for department 'ENG'?",
+      "expected_tables": ["operational_expenses", "departments"],
+      "expected_columns": ["amount"],
+      "expected_sql_fragment": "SUM(oe.amount)"
+    }
+  ],
+  "hybrid_cases": [
+    {
+      "query_id": "HYB-001",
+      "prompt": "Compare our travel policy daily lodging allowance limit with actual lodging expenses for department 'ENG' to identify any non-compliant claims.",
+      "expected_route": "HYBRID_AGENT",
+      "expected_policy_keyword": "200",
+      "expected_data_keyword": "350"
+    }
+  ]
+}
