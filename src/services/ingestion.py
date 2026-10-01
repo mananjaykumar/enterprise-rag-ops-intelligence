@@ -1,5 +1,6 @@
 import logging
 import uuid
+import asyncio
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -48,7 +49,11 @@ class IngestionService:
 
         try:
             # 2. Parse file into structural Markdown AST blocks
-            parsed_blocks = self.parser.parse_file(doc.storage_path, doc.mime_type)
+            parsed_blocks = await asyncio.to_thread(
+                self.parser.parse_file,
+                doc.storage_path,
+                doc.mime_type
+            )
             if not parsed_blocks:
                 raise ValueError(f"No parseable content extracted from file: {doc.filename}")
 
