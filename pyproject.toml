@@ -24,7 +24,8 @@ dependencies = [
     "python-multipart>=0.0.9",
     "flashrank>=0.2.0",
     "langgraph>=0.2.0",
-    "langfuse>=2.0.0"
+    "langfuse>=2.0.0",
+    "google-api-core>=2.19.0"
 ]
 
 [project.optional-dependencies]
