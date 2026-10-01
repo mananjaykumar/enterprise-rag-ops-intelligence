@@ -46,7 +46,7 @@ class IngestionService:
         logger.info("Total content split into %d micro-batches to throttle API ingestion rate.", len(micro_batches))
 
         for idx, batch in enumerate(micro_batches):
-            delay = 3  # Initial exponential wait threshold
+            delay = 4  # Initial exponential wait threshold
             success = False
             
             for attempt in range(1, max_retries + 1):
@@ -57,15 +57,25 @@ class IngestionService:
                     success = True
                     break  # Success! Loop break karke agle batch par jao
                 except ResourceExhausted as exc:
-                    if attempt == max_retries:
-                        logger.error("❌ Google Gemini quota bounds breached permanently after all backoff retries.")
-                        raise exc
-                    logger.warning(
-                        "⚠️ Gemini Rate Limit Triggered at Micro-Batch %d/%d. Cooling down for %ss...",
-                        idx + 1, len(micro_batches), delay
+                    err_str = str(exc).upper()
+                    raw_repr = repr(exc).upper()
+                    is_quota_error = any(
+                        word in err_str or word in raw_repr 
+                        for word in ["429", "RESOURCE_EXHAUSTED", "QUOTA", "TOO MANY REQUESTS", "LIMIT"]
                     )
-                    await asyncio.sleep(delay)
-                    delay *= 2  # Doubles the wait window (3s -> 6s -> 12s)
+                    if is_quota_error:
+                        if attempt == max_retries:
+                            logger.error("❌ Google Gemini quota bounds breached permanently after all backoff retries.")
+                            raise exc
+                        logger.warning(
+                            "⚠️ Gemini Rate Limit Triggered at Micro-Batch %d/%d. Cooling down for %ss...",
+                            idx + 1, len(micro_batches), attempt, max_retries, delay
+                        )
+                        await asyncio.sleep(delay)
+                        delay *= 2  # Doubles the wait window (3s -> 6s -> 12s)
+                    else:
+                        logger.error("Fatal unhandled exception context captured: %s", str(exc))
+                        raise exc
             
             if not success:
                 raise RuntimeError("Document embedding pipeline forcefully aborted due to constant rate exhaustion.")
@@ -74,7 +84,7 @@ class IngestionService:
             # so that Google's free counter resets
             if idx < len(micro_batches) - 1:
                 logger.info("Micro-Batch %d/%d indexed. Pausing pipeline execution for 3 seconds...", idx + 1, len(micro_batches))
-                await asyncio.sleep(3.0)
+                await asyncio.sleep(4.0)
 
         return all_embeddings
 
