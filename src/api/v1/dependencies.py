@@ -37,7 +37,11 @@ async def get_current_user(
     )
 
     try:
-        payload = decode_access_token(token)
+        clean_token = token
+        if token.startswith("Bearer "):
+            clean_token = token.replace("Bearer ", "", 1).strip()
+            
+        payload = decode_access_token(clean_token)
         user_id_str: str | None = payload.get("sub")
         if not user_id_str:
             raise credentials_exception
