@@ -21,7 +21,7 @@ from fastapi.security import APIKeyHeader
 oauth2_scheme = APIKeyHeader(
     name="Authorization",            
     scheme_name="JWT Bearer Token", 
-    description="Enter your token in this format: Bearer <your_token>"
+    description="Enter your token: <your_token>"
 )
 
 
