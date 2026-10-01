@@ -6,6 +6,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.db.models.job import IngestionJob, JobStatus
+from src.db.models.document import Document, DocumentLifecycleStatus
 from src.db.session import AsyncSessionLocal
 from src.domain.interfaces.queue import BaseJobQueueClient
 
