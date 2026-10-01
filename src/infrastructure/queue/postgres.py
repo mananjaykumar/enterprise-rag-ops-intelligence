@@ -90,7 +90,7 @@ class PostgresJobQueueClient(BaseJobQueueClient):
             try:
                 stmt = select(IngestionJob).where(IngestionJob.id == job_id)
                 res = await session.execute(stmt)
-                job = res.scalar_one_or_more()
+                job = res.scalar_one_or_none()
 
                 if not job:
                     return
