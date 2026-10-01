@@ -4,6 +4,8 @@ import asyncio
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from google.api_core.exceptions import ResourceExhausted
+
 
 from src.db.models.document import Document, DocumentChunk, DocumentLifecycleStatus
 from src.db.session import AsyncSessionLocal
@@ -30,6 +32,52 @@ class IngestionService:
         self.storage = storage_client or LocalStorageClient()
         self.embedder = embedding_client or GeminiEmbeddingClient()
         self.parser = parser or DocumentParser()
+
+    async def _embed_with_micro_batches(self, contents: list[str], max_retries: int = 5) -> list[list[float]]:
+        """
+        Splits data into micro-batches and injects dynamic cool-down delays to
+        bypass Google Gemini's Free Tier RPM and IP-based rate restrictions safely.
+        """
+        all_embeddings = []
+        batch_size = 5  # 🟢 Safe size boundary: Sends only 5 Paragraphs at a time
+        
+        # Divide all chunks into sub-lists of 5 each
+        micro_batches = [contents[i:i + batch_size] for i in range(0, len(contents), batch_size)]
+        logger.info("Total content split into %d micro-batches to throttle API ingestion rate.", len(micro_batches))
+
+        for idx, batch in enumerate(micro_batches):
+            delay = 3  # Initial exponential wait threshold
+            success = False
+            
+            for attempt in range(1, max_retries + 1):
+                try:
+                    # Current sub-batch call execution
+                    batch_res = await self.embedder.embed_documents(batch)
+                    all_embeddings.extend(batch_res)
+                    success = True
+                    break  # Success! Loop break karke agle batch par jao
+                except ResourceExhausted as exc:
+                    if attempt == max_retries:
+                        logger.error("❌ Google Gemini quota bounds breached permanently after all backoff retries.")
+                        raise exc
+                    logger.warning(
+                        "⚠️ Gemini Rate Limit Triggered at Micro-Batch %d/%d. Cooling down for %ss...",
+                        idx + 1, len(micro_batches), delay
+                    )
+                    await asyncio.sleep(delay)
+                    delay *= 2  # Doubles the wait window (3s -> 6s -> 12s)
+            
+            if not success:
+                raise RuntimeError("Document embedding pipeline forcefully aborted due to constant rate exhaustion.")
+
+            # 🟢 THE HACK GAP: 3-second pause after every safety chunk operation
+            # so that Google's free counter resets
+            if idx < len(micro_batches) - 1:
+                logger.info("Micro-Batch %d/%d indexed. Pausing pipeline execution for 3 seconds...", idx + 1, len(micro_batches))
+                await asyncio.sleep(3.0)
+
+        return all_embeddings
+
 
     async def process_document(self, document_id: str) -> int:
         """Processes an enqueued document end-to-end. Returns total chunks indexed."""
@@ -63,7 +111,8 @@ class IngestionService:
 
             # 3. Batch generate vector embeddings (768 dimensions)
             contents = [block.content for block in parsed_blocks]
-            embeddings = await self.embedder.embed_documents(contents)
+            # embeddings = await self.embedder.embed_documents(contents)
+            embeddings = await self._embed_with_micro_batches(contents)
 
             # 4. Atomic Database Activation Transaction
             async with self.session_factory() as session:
