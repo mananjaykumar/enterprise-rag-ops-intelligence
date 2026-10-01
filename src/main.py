@@ -22,11 +22,27 @@ from src.db.base import Base
 from src.db.session import AsyncSessionLocal, engine
 from src.services.observability import get_observability_service
 from src.workers.ingestion_worker import IngestionWorker
+from src.infrastructure.queue.postgres import PostgresJobQueueClient 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("enterprise_rag")
 
 settings = get_settings()
+
+sweeper_task: asyncio.Task | None = None
+
+async def start_orphaned_jobs_sweeper(queue_client: PostgresJobQueueClient, interval_seconds: int = 300) -> None:
+    """Autonomous background loop that unlocks zombie processing tasks periodically."""
+    while True:
+        try:
+            logger.info("Running periodic background check for orphaned processing tasks...")
+            rescued_count = await queue_client.clear_orphaned_jobs(timeout_minutes=60)
+            if rescued_count > 0:
+                logger.warning("Successfully rescued %d zombie tasks back into the active queue pipeline.", rescued_count)
+        except Exception as err:
+            logger.error("Orphaned job cleaner loop encountered an unexpected failure: %s", err)
+        
+        await asyncio.sleep(interval_seconds)
 
 
 @asynccontextmanager
@@ -35,6 +51,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     Executes startup checks before accepting traffic and cleans up resources on shutdown.
     """
+    global sweeper_task
     logger.info("Initializing %s...", settings.PROJECT_NAME)
 
     # 1. Startup Database Connectivity & pgvector Verification
@@ -68,7 +85,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 4. Start embedded ingestion worker in background (enables 100% free single-container deployments)
     worker = None
     worker_task = None
+    queue_client = PostgresJobQueueClient()
     try:
+        # Initializing the autonomous sweeper loop task reference
+        sweeper_task = asyncio.create_task(start_orphaned_jobs_sweeper(queue_client, interval_seconds=300))
+        logger.info("Autonomous Self-Healing Orphaned Jobs Sweeper loop initialized.")
+
         worker = IngestionWorker()
         worker_task = asyncio.create_task(worker.run())
         logger.info("Embedded Ingestion Worker background task started.")
@@ -79,6 +101,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # 4. Graceful Shutdown
     logger.info("Shutting down %s...", settings.PROJECT_NAME)
+    if sweeper_task:
+        sweeper_task.cancel()
+        logger.info("Background sweeper task loop terminated.")
     if worker:
         worker.stop()
     if worker_task:

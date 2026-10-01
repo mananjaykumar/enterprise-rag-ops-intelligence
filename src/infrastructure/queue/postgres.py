@@ -87,14 +87,87 @@ class PostgresJobQueueClient(BaseJobQueueClient):
     async def fail_job(self, job_id: str, error_message: str) -> None:
         """Marks a job as failed with an error reason."""
         async with self.session_factory() as session:
-            stmt = (
-                update(IngestionJob)
-                .where(IngestionJob.id == uuid.UUID(job_id))
-                .values(
-                    status=JobStatus.FAILED,
-                    error_message=error_message,
-                    locked_at=None,
+            try:
+                stmt = select(IngestionJob).where(IngestionJob.id == job_id)
+                res = await session.execute(stmt)
+                job = res.scalar_one_or_more()
+
+                if not job:
+                    return
+
+                # Check if we can retry or if it is a permanent failure
+                if job.attempts < job.max_attempts:
+                    # RETRY STATE: Put it back in the queue, clear locks, increment attempts
+                    job.status = JobStatus.QUEUED
+                    job.locked_by = None
+                    job.locked_at = None
+                    job.error_message = f"Attempt {job.attempts} failed: {error_message}"
+
+                    # Optional: Sync master document back to PENDING so worker can process again
+                    if job.document_id:
+                        doc_stmt = (
+                            update(Document)
+                            .where(Document.id == job.document_id)
+                            .values(status=DocumentLifecycleStatus.PENDING)
+                        )
+                        await session.execute(doc_stmt)
+                else:
+                    # PERMANENT FAILURE: Hard stop after max attempts exhausted
+                    job.status = JobStatus.FAILED
+                    job.error_message = f"Max retries exhausted. Final Error: {error_message}"
+                
+                if job.document_id:
+                        doc_stmt = (
+                            update(Document)
+                            .where(Document.id == job.document_id)
+                            .values(
+                                status=DocumentLifecycleStatus.FAILED,
+                                error_log=f"Job execution permanently failed after {job.max_attempts} retries."
+                            )
+                        )
+                        await session.execute(doc_stmt)
+                        
+                await session.commit()
+                
+            #     stmt = (
+            #     update(IngestionJob)
+            #     .where(IngestionJob.id == uuid.UUID(job_id))
+            #     .values(
+            #         status=JobStatus.FAILED,
+            #         error_message=error_message,
+            #         locked_at=None,
+            #     )
+            # )
+            # await session.execute(stmt)
+            # await session.commit()
+            except Exception as e:
+                await session.rollback()
+                raise e
+
+    async def clear_orphaned_jobs(self, timeout_minutes: int = 60) -> int:
+        """
+        Identifies tasks stuck in PROCESSING state longer than the timeout threshold
+        and safely releases their distributed locks back into the QUEUED state.
+        """
+        threshold_time = datetime.now(UTC) - timedelta(minutes=timeout_minutes)
+        
+        async with self.session_factory() as session:
+            try:
+                stmt = (
+                    update(IngestionJob)
+                    .where(
+                        IngestionJob.status == JobStatus.PROCESSING,
+                        IngestionJob.locked_at < threshold_time
+                    )
+                    .values(
+                        status=JobStatus.QUEUED,
+                        locked_by=None,
+                        locked_at=None
+                    )
                 )
-            )
-            await session.execute(stmt)
-            await session.commit()
+                result = await session.execute(stmt)
+                await session.commit()
+                return result.rowcount  # Returns the total number of rescued records
+            except Exception as e:
+                await session.rollback()
+                raise e
