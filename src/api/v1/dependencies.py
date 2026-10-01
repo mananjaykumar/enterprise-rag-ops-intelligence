@@ -3,7 +3,7 @@ from collections.abc import Callable
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+# from fastapi.security import OAuth2PasswordBearer
 from jwt import PyJWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,10 +11,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.security import decode_access_token
 from src.db.models.user import User, UserRole
 from src.db.session import get_db
+from fastapi.security import APIKeyHeader
 
-oauth2_scheme = OAuth2PasswordBearer(
-    tokenUrl="/api/v1/auth/login",
-    scheme_name="JWT Bearer Token",
+# oauth2_scheme = OAuth2PasswordBearer(
+#     tokenUrl="/api/v1/auth/login",
+#     scheme_name="JWT Bearer Token",
+# )
+
+oauth2_scheme = APIKeyHeader(
+    name="Authorization",            
+    scheme_name="JWT Bearer Token", 
+    description="Enter your token in this format: Bearer <your_token>"
 )
 
 
