@@ -40,7 +40,7 @@ class IngestionService:
         bypass Google Gemini's Free Tier RPM and IP-based rate restrictions safely.
         """
         all_embeddings = []
-        batch_size = 10  # 🟢 Safe size boundary: Sends only 5 Paragraphs at a time
+        batch_size = 5  # 🟢 Safe size boundary: Sends only 5 Paragraphs at a time
 
         # Divide all chunks into sub-lists of 5 each
         micro_batches = [contents[i : i + batch_size] for i in range(0, len(contents), batch_size)]

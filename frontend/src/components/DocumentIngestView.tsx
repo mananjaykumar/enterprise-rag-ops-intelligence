@@ -135,20 +135,6 @@ export default function DocumentIngestView({
     fetchDocuments();
   }, [fetchDocuments]);
 
-  // Auto-sync document lineage status with backend while any document is in PENDING or PROCESSING state
-  useEffect(() => {
-    const hasPendingOrProcessing = documents.some(
-      (doc) => doc.status === "PENDING" || doc.status === "PROCESSING"
-    );
-    if (!hasPendingOrProcessing || !isAuthenticated) return;
-
-    const syncInterval = setInterval(() => {
-      fetchDocuments();
-    }, 3000);
-
-    return () => clearInterval(syncInterval);
-  }, [documents, isAuthenticated, fetchDocuments]);
-
   // 1. DRAG AND DROP HANDLERS
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
@@ -548,24 +534,6 @@ export default function DocumentIngestView({
                 Active Knowledge Base Catalog ({documents.length} Document{documents.length !== 1 ? "s" : ""})
               </h3>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                {documents.some((d) => d.status === "PENDING" || d.status === "PROCESSING") && (
-                  <span
-                    style={{
-                      fontSize: "0.74rem",
-                      color: "var(--brand-cyan)",
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: "5px",
-                      padding: "3px 8px",
-                      borderRadius: "4px",
-                      background: "rgba(6, 182, 212, 0.1)",
-                      border: "1px solid rgba(6, 182, 212, 0.25)",
-                    }}
-                  >
-                    <RefreshCw size={11} className="animate-spin" />
-                    Auto-syncing with worker
-                  </span>
-                )}
                 <span
                   style={{
                     fontSize: "0.76rem",
