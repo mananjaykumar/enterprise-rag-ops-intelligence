@@ -1,11 +1,10 @@
+import asyncio
 import logging
 import uuid
-import asyncio
 
+from google.api_core.exceptions import ResourceExhausted
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from google.api_core.exceptions import ResourceExhausted
-
 
 from src.db.models.document import Document, DocumentChunk, DocumentLifecycleStatus
 from src.db.session import AsyncSessionLocal
@@ -33,22 +32,27 @@ class IngestionService:
         self.embedder = embedding_client or GeminiEmbeddingClient()
         self.parser = parser or DocumentParser()
 
-    async def _embed_with_micro_batches(self, contents: list[str], max_retries: int = 5) -> list[list[float]]:
+    async def _embed_with_micro_batches(
+        self, contents: list[str], max_retries: int = 5
+    ) -> list[list[float]]:
         """
         Splits data into micro-batches and injects dynamic cool-down delays to
         bypass Google Gemini's Free Tier RPM and IP-based rate restrictions safely.
         """
         all_embeddings = []
-        batch_size = 5  # 🟢 Safe size boundary: Sends only 5 Paragraphs at a time
-        
+        batch_size = 10  # 🟢 Safe size boundary: Sends only 5 Paragraphs at a time
+
         # Divide all chunks into sub-lists of 5 each
-        micro_batches = [contents[i:i + batch_size] for i in range(0, len(contents), batch_size)]
-        logger.info("Total content split into %d micro-batches to throttle API ingestion rate.", len(micro_batches))
+        micro_batches = [contents[i : i + batch_size] for i in range(0, len(contents), batch_size)]
+        logger.info(
+            "Total content split into %d micro-batches to throttle API ingestion rate.",
+            len(micro_batches),
+        )
 
         for idx, batch in enumerate(micro_batches):
-            delay = 4  # Initial exponential wait threshold
+            delay = 10  # Initial exponential wait threshold
             success = False
-            
+
             for attempt in range(1, max_retries + 1):
                 try:
                     # Current sub-batch call execution
@@ -60,34 +64,51 @@ class IngestionService:
                     err_str = str(exc).upper()
                     raw_repr = repr(exc).upper()
                     is_quota_error = any(
-                        word in err_str or word in raw_repr 
-                        for word in ["429", "RESOURCE_EXHAUSTED", "QUOTA", "TOO MANY REQUESTS", "LIMIT"]
+                        word in err_str or word in raw_repr
+                        for word in [
+                            "429",
+                            "RESOURCE_EXHAUSTED",
+                            "QUOTA",
+                            "TOO MANY REQUESTS",
+                            "LIMIT",
+                        ]
                     )
                     if is_quota_error:
                         if attempt == max_retries:
-                            logger.error("❌ Google Gemini quota bounds breached permanently after all backoff retries.")
+                            logger.error(
+                                "❌ Google Gemini quota bounds breached permanently after all backoff retries."
+                            )
                             raise exc
                         logger.warning(
                             "⚠️ Gemini Rate Limit Triggered at Micro-Batch %d/%d. Cooling down for %ss...",
-                            idx + 1, len(micro_batches), attempt, max_retries, delay
+                            idx + 1,
+                            len(micro_batches),
+                            attempt,
+                            max_retries,
+                            delay,
                         )
                         await asyncio.sleep(delay)
                         delay *= 2  # Doubles the wait window (3s -> 6s -> 12s)
                     else:
                         logger.error("Fatal unhandled exception context captured: %s", str(exc))
                         raise exc
-            
+
             if not success:
-                raise RuntimeError("Document embedding pipeline forcefully aborted due to constant rate exhaustion.")
+                raise RuntimeError(
+                    "Document embedding pipeline forcefully aborted due to constant rate exhaustion."
+                )
 
             # 🟢 THE HACK GAP: 3-second pause after every safety chunk operation
             # so that Google's free counter resets
             if idx < len(micro_batches) - 1:
-                logger.info("Micro-Batch %d/%d indexed. Pausing pipeline execution for 3 seconds...", idx + 1, len(micro_batches))
-                await asyncio.sleep(4.0)
+                logger.info(
+                    "Micro-Batch %d/%d indexed. Pausing pipeline execution for 3 seconds...",
+                    idx + 1,
+                    len(micro_batches),
+                )
+                await asyncio.sleep(10.0)
 
         return all_embeddings
-
 
     async def process_document(self, document_id: str) -> int:
         """Processes an enqueued document end-to-end. Returns total chunks indexed."""
@@ -108,9 +129,7 @@ class IngestionService:
         try:
             # 2. Parse file into structural Markdown AST blocks
             parsed_blocks = await asyncio.to_thread(
-                self.parser.parse_file,
-                doc.storage_path,
-                doc.mime_type
+                self.parser.parse_file, doc.storage_path, doc.mime_type
             )
             if not parsed_blocks:
                 raise ValueError(f"No parseable content extracted from file: {doc.filename}")
@@ -147,13 +166,32 @@ class IngestionService:
                 )
                 await session.execute(supersede_stmt)
 
+                subq = (
+                    select(Document.id)
+                    .where(
+                        Document.tenant_id == active_doc.tenant_id,
+                        Document.filename == active_doc.filename,
+                        Document.id != active_doc.id,
+                        Document.is_active,
+                    )
+                    .scalar_subquery()
+                )
+
                 # Step B: Deactivate chunks of superseded documents
+                # deactivate_chunks = (
+                #     update(DocumentChunk)
+                #     .where(
+                #         DocumentChunk.tenant_id == active_doc.tenant_id,
+                #         DocumentChunk.document_id != active_doc.id,
+                #         DocumentChunk.is_active == True,  # noqa: E712
+                #     )
+                #     .values(is_active=False)
+                # )
                 deactivate_chunks = (
                     update(DocumentChunk)
                     .where(
-                        DocumentChunk.tenant_id == active_doc.tenant_id,
-                        DocumentChunk.document_id != active_doc.id,
-                        DocumentChunk.is_active == True,  # noqa: E712
+                        DocumentChunk.document_id.in_(subq),
+                        DocumentChunk.is_active,
                     )
                     .values(is_active=False)
                 )
