@@ -8,3 +8,7 @@ node_modules/
 out/
 chroma_db/
 *.log
+
+# Existing internal documentation (excluded from GitHub pushes)
+docs/
+docs/**
