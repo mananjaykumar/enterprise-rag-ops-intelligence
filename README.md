@@ -4,29 +4,44 @@
 
 ---
 
-## 1. System Overview & Problem Statement
+## 1. Problem
 
-Modern enterprise intelligence is divided into two disconnected silos:
-1. **Unstructured Knowledge**: Company policies, compliance guidelines, vendor master agreements, statement of work (SOW) documents, and standard operating procedures (SOPs).
-2. **Structured Operational Data**: Relational transactional tables tracking departmental budgets, active employee rosters, vendor contracts, accounts payable invoices, and operational expenses.
+Modern enterprise data architectures are fractured into two isolated silos:
 
-Traditional RAG architectures fail when faced with questions that require cross-referencing qualitative rules against quantitative operational numbers. For example:
-> *"Audit all Q3 engineering travel claims against our standard travel policy and highlight any reimbursements exceeding meal or lodging limits."*
+```
+┌────────────────────────────────────────────────────────┐   ┌────────────────────────────────────────────────────────┐
+│           UNSTRUCTURED KNOWLEDGE BASES                 │   │            STRUCTURED OPERATIONAL DATA                 │
+│                                                        │   │                                                        │
+│ • Corporate Travel & Expense Policies                  │   │ • Departmental Budgets (departments)                   │
+│ • Vendor Master Service Agreements (MSAs)              │   │ • Active Employee Rosters (employees)                  │
+│ • Statements of Work (SOWs) & SLAs                     │   │ • Approved Vendor Database (vendors)                   │
+│ • Standard Operating Procedures (SOPs)                 │   │ • Executed Contracts (contracts)                       │
+│ • HR Employee Handbooks & Compliance Guidelines        │   │ • Accounts Payable Invoices (invoices)                 │
+│                                                        │   │ • Transactional Expenses (operational_expenses)        │
+└────────────────────────────────────────────────────────┘   └────────────────────────────────────────────────────────┘
+```
 
-A standard vector database cannot compute financial aggregations across thousands of relational rows. Conversely, a relational database cannot interpret policy exceptions defined in an uploaded PDF.
+### Why Existing Approaches Fail
 
-**This platform resolves the divide with a Dual-Intelligence architecture:**
-- **Zero-Latency Intent Routing**: Heuristic regex pre-classification (~0ms) with document-catalog awareness, falling back to a schema-grounded LLM router for ambiguous requests.
-- **Two-Tier Hybrid Document Retrieval**: pgvector dense semantic search (768-dim embeddings) fused with native PostgreSQL Full-Text Search (TSVECTOR + GIN) via Reciprocal Rank Fusion ($k=60$), re-ranked with a local ONNX cross-encoder (`ms-marco-TinyBERT-L-2-v2`).
-- **5-Gate Defense-in-Depth SQL Sandbox**: AST verification via `sqlglot`, strict read-only execution, schema whitelisting, prohibited function screening, automated multi-tenant filter injection, and hard query limits.
-- **Stateful Multi-Agent Orchestration**: LangGraph-powered directed acyclic graph (DAG) with concurrent parallel execution (`asyncio.gather`) for hybrid audit workflows.
-- **Micro-Batch Ingestion Pipeline**: Asynchronous PostgreSQL queue (`FOR UPDATE SKIP LOCKED`) with automatic rate-limit throttling and atomic document version superseding.
+1. **Standard Vector RAG Fails on Operations**:
+   Vector databases excel at fuzzy textual similarity, but they cannot perform deterministic mathematical aggregations, groupings, or joins across thousands of operational records. A query like *"Total unpaid invoices across all active logistics vendors"* cannot be answered reliably by embedding invoice PDFs into a vector space.
+
+2. **Text-to-SQL Fails on Policies & Contracts**:
+   Text-to-SQL engines excel at generating relational queries, but they have zero visibility into qualitative business rules, clause exceptions, or compliance limits locked inside PDFs or Word documents. A query like *"What is the approved daily dinner allowance in Tier-1 cities?"* does not exist in relational tables.
+
+3. **The Multi-Step Compliance Gap**:
+   Real-world executive inquiries routinely require **both** sources simultaneously:
+   > *"Audit all Q3 engineering travel claims against our standard travel policy and highlight any reimbursements exceeding meal or lodging limits."*
+
+Answering this requires extracting the qualitative policy rule from an unstructured document, translating the data audit into a sandboxed relational SQL query, and cross-referencing both outputs to identify policy breaches.
 
 ---
 
-## 2. Architecture & System Topologies
+## 2. Architecture
 
-### 2.1 High-Level Architecture
+The platform implements a **Dual-Intelligence Architecture** orchestrated by a unified query router, stateful agent graphs, and isolated execution pipelines.
+
+### 2.1 System Topology
 
 ```mermaid
 flowchart TB
@@ -39,7 +54,7 @@ flowchart TB
     end
 
     subgraph APILayer["FastAPI Enterprise Gateway (Python 3.12)"]
-        AuthMid["JWT Auth & Multi-Tenant Isolation (RBAC)"]
+        AuthMid["JWT Auth & Multi-Tenant RBAC Boundary"]
         RouterSvc["Dual-Stage Query Intent Router"]
     end
 
@@ -47,7 +62,7 @@ flowchart TB
         subgraph UnstructuredPipeline["Unstructured Document Intelligence"]
             DocParser["Markdown AST Parser (PDF, DOCX, TXT, MD)"]
             Embedder["Micro-Batch Embedder (gemini-embedding-001, 768-dim)"]
-            Retriever["Hybrid Retrieval (Dense pgvector + Sparse TSVECTOR)"]
+            Retriever["Two-Tier Hybrid Search (Dense pgvector + Sparse TSVECTOR)"]
             RRF["Reciprocal Rank Fusion (k=60)"]
             Reranker["FlashRank Cross-Encoder (TinyBERT ONNX)"]
             RAGSvc["Grounded Generator with Citation Lineage"]
@@ -61,15 +76,15 @@ flowchart TB
         end
 
         subgraph AgentCoordinator["LangGraph Stateful Orchestrator"]
-            Planner["Query Decomposer & Planner"]
+            Planner["Query Decomposer & Sub-Query Planner"]
             ParallelNode["Concurrent Worker (asyncio.gather)"]
             Synthesizer["Executive Synthesis Engine"]
         end
     end
 
     subgraph DataLayer["Enterprise PostgreSQL 16 + pgvector"]
-        DB_Docs[("documents & document_chunks (GIN & HNSW)")]
-        DB_Queue[("ingestion_jobs (SKIP LOCKED Queue)")]
+        DB_Docs[("documents & document_chunks\n(GIN fts_tokens + Cosine Vector)")]
+        DB_Queue[("ingestion_jobs\n(SKIP LOCKED Queue)")]
         DB_Ops[("Operational Business Tables\n(departments, employees, vendors,\ncontracts, invoices, expenses)")]
         DB_Audit[("sql_query_audit_logs")]
     end
@@ -95,307 +110,200 @@ flowchart TB
     AuditLogger --> DB_Audit
 ```
 
----
+### 2.2 Core Architectural Principles
 
-### 2.2 LangGraph Orchestrator Execution Flow
-
-When a user submits a query requiring both document policies and operational numbers, the orchestrator executes concurrently rather than sequentially, reducing execution latency from ~35s down to ~15s:
-
-```mermaid
-stateDiagram-v2
-    [*] --> Planner: User Natural Language Query
-
-    state Planner {
-        direction TB
-        Classify: Intent Classification (Fast Heuristic / LLM)
-        Decompose: Break query into document_question & database_question
-    }
-
-    Planner --> DecisionRoute
-
-    state DecisionRoute <<choice>>
-    DecisionRoute --> RAG_Branch: Route == RAG
-    DecisionRoute --> SQL_Branch: Route == SQL
-    DecisionRoute --> Concurrent_Branch: Route == HYBRID_AGENT
-
-    state Concurrent_Branch {
-        direction LR
-        state "asyncio.gather()" as Gather {
-            state "RAG Worker Node" as RAGNode {
-                DenseSparse: Vector + FTS Search
-                RRF_Step: Reciprocal Rank Fusion
-                FlashRank: ONNX Cross-Encoder
-                ExtractContext: Build Context Chunks
-            }
-            state "SQL Worker Node" as SQLNode {
-                GenSQL: Text-to-SQL Translation
-                Sandbox: 5-Gate AST Validation & Tenant Injection
-                Execute: Read-Only Query Run (<3000ms)
-            }
-        }
-    }
-
-    state RAG_Branch {
-        RAGOnly: Full RAG Search & Generation
-    }
-
-    state SQL_Branch {
-        SQLOnly: Text-to-SQL + Sandbox + Explanation
-    }
-
-    Concurrent_Branch --> Synthesizer: Merged State (Citations + Tabular Rows)
-    RAG_Branch --> Synthesizer
-    SQL_Branch --> Synthesizer
-
-    state Synthesizer {
-        CompareRules: Cross-reference document rules with actual figures
-        DetectViolations: Explicitly highlight policy discrepancies / budget overruns
-        DraftBriefing: Produce executive-ready briefing
-    }
-
-    Synthesizer --> [*]: Final Response with Structured Citations & Table Preview
-```
+- **Zero-Trust Multi-Tenancy**: Every database query—whether semantic vector similarity, full-text lexical search, or generated SQL—is strictly pre-filtered by `tenant_id` and verified against caller RBAC roles (`ADMIN`, `MANAGER`, `ANALYST`).
+- **Zero Hallucination with Lineage**: Every statement generated by RAG is linked to a deterministic numbered citation bracket (`[1]`, `[2]`), mapping directly to the source document, page number, section heading, and verbatim text snippet.
+- **Embedded Ingestion Worker**: Eliminates external Celery/Redis dependencies. Ingestion tasks run asynchronously inside the FastAPI lifespan using PostgreSQL `FOR UPDATE SKIP LOCKED`, keeping the entire service operational under 512MB RAM for free-tier deployments.
 
 ---
 
-### 2.3 Two-Tier Hybrid Retrieval & Re-ranking Pipeline
+## 3. Tech Stack
 
-```mermaid
-flowchart LR
-    Query["User Question"] --> Embed["Query Embedding\n(gemini-embedding-001)"]
-    
-    subgraph CandidateRetrieval["Tier 1: Parallel Candidate Search (top_k = 20)"]
-        Embed -->|Vector Cosine Distance| Dense["Dense Search\npgvector <=> operator\n+ Tenant & RBAC Filter"]
-        Query -->|English Stemmed Tsquery| Sparse["Sparse Search\nFTS tokens @@ operator\n+ Tenant & RBAC Filter"]
-    end
+Every technology in this stack is verified directly against the production codebase:
 
-    Dense --> RRF["Reciprocal Rank Fusion\nScore = 1/(60 + Rank_dense) + 1/(60 + Rank_sparse)"]
-    Sparse --> RRF
-
-    subgraph DeepRerank["Tier 2: Neural Cross-Encoder & Window Reordering"]
-        RRF --> CrossEncoder["FlashRank Local ONNX\n(ms-marco-TinyBERT-L-2-v2)\nComputes query-chunk cross-attention"]
-        CrossEncoder --> Pruning["Score Thresholding & Token Budget Cap"]
-        Pruning --> LostInMiddle["Lost-in-the-Middle Edge Distribution\nPlaces highest-scoring items at\nstart and end of prompt"]
-    end
-
-    LostInMiddle --> FinalContext["Grounded Prompt Context Blocks\nwith Source IDs [1], [2]..."]
-```
+| Category | Technology | Version | Purpose in Architecture |
+| :--- | :--- | :--- | :--- |
+| **Backend Framework** | FastAPI | `0.110+` | High-performance asynchronous REST API gateway and SSE token streaming |
+| **Runtime** | Python | `3.12` | Core backend language with native async/await and strict type hinting |
+| **Database & Search** | PostgreSQL 16 + `pgvector` | `0.2.5+` | Unified database for relational entities, dense vector search, and full-text TSVECTOR indexing |
+| **ORM & Driver** | SQLAlchemy + `asyncpg` | `2.0+` / `0.29+` | Async connection pooling, `selectinload` relationship loading, transaction isolation |
+| **Embedding Model** | `gemini-embedding-001` | Cloud API | 768-dimensional semantic embeddings for document chunks and search queries |
+| **Primary LLM** | `gemini-3.5-flash-lite` | Cloud API | Intent routing, Text-to-SQL translation, grounded RAG answering, and multi-agent synthesis |
+| **Cross-Encoder Reranker** | FlashRank (`ms-marco-TinyBERT-L-2-v2`) | `0.2+` | Local ONNX cross-encoder running CPU-side for deep semantic query-passage re-ranking |
+| **SQL AST Engine** | `sqlglot` | `23.0+` | AST parsing, dialect transpilation, safety gate validation, and multi-tenant filter injection |
+| **Document Parsers** | `pypdf` + `python-docx` | `4.0+` / `1.1+` | Structural parsing for PDF, DOCX (with table-to-Markdown conversion), TXT, and Markdown |
+| **Agent Orchestration** | `langgraph` + `langchain-core` | `0.2+` | Stateful DAG orchestration with parallel branch execution (`asyncio.gather`) |
+| **Authentication** | `pyjwt` + `bcrypt` | `2.8+` / `4.1+` | JWT bearer token issuing (`HS256`, 24h expiration) and secure password hashing |
+| **Frontend Framework** | Next.js 16 (Turbopack) | `16.3.7` | Production React 19 app with modular studio interfaces, SSE streaming, and Lucide icons |
+| **Observability** | Langfuse (Optional) | `2.0+` | Distributed tracing with automated fallback to zero-overhead local `NullSpan` |
 
 ---
 
-### 2.4 5-Gate Defense-in-Depth SQL AST Sandbox
+## 4. RAG Pipeline
 
-To safely execute dynamic LLM-generated SQL against business data without risk of data destruction, SQL injection, or cross-tenant leakage, all generated SQL must pass through five rigorous validation gates:
+The unstructured document pipeline enforces end-to-end provenance—from initial upload to grounded citation generation.
 
 ```mermaid
 flowchart TD
-    RawSQL["Candidate SQL from LLM"] --> Gate1["Gate 1: Markdown Stripping & Format Cleanup"]
-    Gate1 --> Gate2["Gate 2: AST Parser (sqlglot)\n- Exactly one statement allowed\n- Root node MUST be exp.Select (rejection of INSERT, UPDATE, DROP, ALTER)"]
-    Gate2 -->|Violation| Blocked["Raise SQLSecurityViolation & Log to Audit Table"]
-    Gate2 -->|Valid SELECT| Gate3["Gate 3: Whitelist & Prohibited Functions\n- Tables must be in: {departments, employees, vendors, contracts, invoices, operational_expenses}\n- Block system functions: pg_sleep, pg_read_file, current_user, inet_client_addr, etc."]
-    Gate3 -->|Violation| Blocked
-    Gate3 -->|Approved Schema| Gate4["Gate 4: AST Multi-Tenant Injection\n- Traverses all referenced tables\n- Injects: alias.tenant_id = :tenant_id into WHERE clause"]
-    Gate4 --> Gate5["Gate 5: Query Limit Enforcement\n- Appends LIMIT 100 or clamps existing limit <= 100"]
-    Gate5 --> ExecEnv["Read-Only Execution Sandbox\n- SET statement_timeout = 3000ms\n- SET TRANSACTION READ ONLY\n- Automatic rollback to keep session write-capable"]
-    ExecEnv --> Audit["Commit Entry to sql_query_audit_logs"]
-    Audit --> Return["Return Column Headers, Serialized Rows, Exec Time"]
+    subgraph IngestionStage["1. Ingestion & Versioning"]
+        Upload["File Upload (PDF, DOCX, TXT, MD)"] --> ASTParse["DocumentParser\nExtracts headings, paragraphs, converts docx tables to Markdown"]
+        ASTParse --> JobQueue["PostgreSQL Ingestion Queue\n(status: QUEUED, SKIP LOCKED)"]
+        JobQueue --> MicroBatch["Micro-Batch Embedder\n5 chunks/batch with dynamic cool-down delays"]
+        MicroBatch --> Supersede["Atomic Versioning Transaction\nOld active versions marked SUPERSEDED\nNew chunks set to ACTIVE with RBAC inheritance"]
+    end
+
+    subgraph TwoTierRetrieval["2. Two-Tier Hybrid Retrieval"]
+        UserQuery["User Query"] --> EmbedQuery["Embed Query Vector\n(gemini-embedding-001, 768-dim)"]
+        EmbedQuery --> DenseSearch["Dense Cosine Search\npgvector <=> operator\nWHERE tenant_id = :id AND role = ANY(allowed_roles)"]
+        UserQuery --> SparseSearch["Sparse Lexical Search\nPostgreSQL fts_tokens @@ plainto_tsquery()\nWHERE tenant_id = :id AND role = ANY(allowed_roles)"]
+        DenseSearch --> RRF["Reciprocal Rank Fusion (k=60)\nRRF_Score = 1/(60 + Rank_dense) + 1/(60 + Rank_sparse)"]
+        SparseSearch --> RRF
+        RRF --> FlashRank["FlashRank Cross-Encoder\n(ms-marco-TinyBERT-L-2-v2)\nLocal ONNX async scoring"]
+        FlashRank --> LostInMiddle["Lost-in-the-Middle Edge Reordering\nPlaces top-ranked passages at start/end of prompt"]
+    end
+
+    subgraph GroundedGeneration["3. Grounded Generation & Citation Lineage"]
+        LostInMiddle --> PromptBuild["Context Assembly with Numbered Headers\n[1] Document: Policy | Section: Travel..."]
+        PromptBuild --> LLMGen["Gemini 3.5 Flash Lite\nStrict System Instruction: Ground answers ONLY in sources"]
+        LLMGen --> CitExtract["Citation Extractor\nRegex parses [N] brackets, verifies existence in source map"]
+        CitExtract --> Output["RAGQueryResponse\nAnswer text + structured CitationItem array"]
+    end
 ```
+
+### Key RAG Implementation Details
+
+1. **Table-Aware Markdown AST Parsing (`src/services/parser.py`)**:
+   - Parses DOCX files block-by-block. Native Word tables (`tbl`) are automatically transformed into clean GitHub-Flavored Markdown tables with structured headers and rows (`| Col 1 | Col 2 |`), preserving relational layouts for the LLM.
+2. **Rate-Limit Resilient Micro-Batching (`src/services/ingestion.py`)**:
+   - Ingestion chunks are dispatched in micro-batches of 5 chunks with exponential backoff and dynamic cool-down delays, preventing quota exhaustion (`ResourceExhausted 429`) on free-tier LLM endpoints.
+3. **Atomic Document Superseding**:
+   - When a document with an existing filename is uploaded into the same tenant, the database atomically marks previous versions as `SUPERSEDED`, deactivates their chunks (`is_active = false`), and activates the new version within a single transaction.
+4. **Citation Lineage Guarantee**:
+   - Bracket citations (`[1]`, `[2]`) in generated responses are validated against the actual retrieved chunks. If the retrieved context is insufficient, the system returns a deterministic disclaimer rather than speculating.
 
 ---
 
-## 3. Technology Stack & Verification
+## 5. Agent Workflow
 
-Every component listed below is verified in the codebase:
+For complex queries requiring cross-referencing between policy documents and operational databases, the platform uses a **LangGraph-driven Stateful Agent Graph**.
 
-| Subsystem | Component / Library | Implementation Details |
-| :--- | :--- | :--- |
-| **Backend Runtime** | Python 3.12 + FastAPI 0.110+ | Asynchronous REST gateway with dependency injection, lifespan management, and CORS middleware |
-| **Relational Database** | PostgreSQL 16 + `pgvector` 0.2.5+ | Vector indexes, full-text search indexes (`GIN` on `tsvector`), and operational business tables |
-| **ORM & Async DB Driver** | SQLAlchemy 2.0+ & `asyncpg` 0.29+ | Async connection pooling, `selectinload` relationship loading, transaction isolation |
-| **Embedding Model** | `gemini-embedding-001` via `google-genai` | 768 dimensions, specialized task types (`RETRIEVAL_DOCUMENT` and `RETRIEVAL_QUERY`) |
-| **Primary LLM** | `gemini-3.5-flash-lite` | Grounded generative RAG, zero-temperature Text-to-SQL translation, and multi-agent synthesis |
-| **Re-ranking Engine** | `flashrank` 0.2+ | `ms-marco-TinyBERT-L-2-v2` ONNX cross-encoder model running locally on CPU in async threadpools |
-| **SQL AST Engine** | `sqlglot` 23.0+ | Transpilation, AST syntax tree analysis, table extraction, and tenant filter mutation |
-| **Document Parsers** | `pypdf` 4.0+ & `python-docx` 1.1+ | Structural parsing, heading hierarchy extraction, and automated Word table to Markdown table conversion |
-| **Agent Framework** | `langgraph` 0.2+ & `langchain-core` | `StateGraph` directed acyclic execution graph with parallel branch gathering |
-| **Observability** | `langfuse` 2.0+ (Optional) | End-to-end trace collection, span tracking, token generation logging with no-op `NullSpan` fallback |
-| **Authentication** | `pyjwt` 2.8+ & `bcrypt` 4.1+ | Multi-tenant JWT bearer tokens (HS256, 24-hour expiration) and password hashing |
-| **Frontend Framework** | Next.js 16.3.7 (Turbopack) + React 19.2 | Client-side reactive UI with modular tab views, Lucide icons, and zero third-party UI framework lock-in |
+### 5.1 Orchestration Topology
+
+```mermaid
+flowchart TD
+    START([START]) --> Planner["Planner Node\nDecomposes user query into:\n• document_question (RAG)\n• database_question (SQL)"]
+    
+    Planner --> ConditionalRoute{Route Classification}
+    
+    ConditionalRoute -->|RAG| RAGOnly["RAG Worker Node"]
+    ConditionalRoute -->|SQL| SQLOnly["SQL Worker Node"]
+    ConditionalRoute -->|HYBRID_AGENT| ParallelNode["Parallel Execution Node\nasyncio.gather(RAGNode, SQLNode)"]
+
+    subgraph ConcurrentExecution["Concurrent Branch (HYBRID_AGENT)"]
+        ParallelNode --> BranchRAG["RAG Search & Retrieval\n(Hybrid + FlashRank)"]
+        ParallelNode --> BranchSQL["Text-to-SQL + Sandbox\n(5 Gates + Read-Only Exec)"]
+        BranchRAG --> GatherMerge["Merge Plan Steps & Results\n(Isolated Exception Handling)"]
+        BranchSQL --> GatherMerge
+    end
+
+    GatherMerge --> Synthesizer["Synthesizer Node\nCross-references policy rules with actual figures\nHighlights non-compliant claims & budget overruns"]
+    RAGOnly --> Synthesizer
+    SQLOnly --> Synthesizer
+
+    Synthesizer --> END([END])
+```
+
+### 5.2 Concurrency Optimization
+In hybrid execution mode, rather than running RAG search and Text-to-SQL sequentially (which takes ~35 seconds), the `_parallel_rag_sql_node` executes both tasks concurrently using Python's `asyncio.gather()`:
+
+```python
+# Concurrently dispatches independent retrieval and database tasks
+rag_result, sql_result = await asyncio.gather(
+    self._rag_node(state, config),
+    self._sql_node(state, config),
+    return_exceptions=True,  # Error isolation: one failure does not crash the pipeline
+)
+```
+
+**Result**: Hybrid query latency drops from ~35s down to **~15–20s**, with isolated exception handling so the synthesizer can still deliver partial findings if one branch experiences issues.
 
 ---
 
-## 4. Database Architecture & Schema Specification
+## 6. Text-to-SQL Safeguards
 
-The database contains two functional domains:
-1. **Document Management & Ingestion Queues** (Unstructured Knowledge)
-2. **Operational Enterprise Tables** (Structured Business Operations)
+Allowing an LLM to generate raw SQL against an operational database requires defense-in-depth security. The platform implements a **5-Gate AST Validation Sandbox** via `sqlglot`:
 
-### 4.1 Document & Knowledge Tables
-- `users`: Multi-tenant user identities with roles (`ADMIN`, `MANAGER`, `ANALYST`) and hashed passwords.
-- `documents`: Document registry tracking original filenames, SHA-256 hashes, storage paths, MIME types, versions, lifecycle states (`PENDING`, `PROCESSING`, `ACTIVE`, `SUPERSEDED`, `ARCHIVED`, `FAILED`), and access control arrays (`allowed_roles`).
-- `document_chunks`: Structural chunk blocks containing page numbers, section headings, heading hierarchy paths, chunk types (`text`, `table`), table dimensions, `content`, 768-dimensional `embedding` vector, and computed `fts_tokens` (`tsvector`) for full-text search.
-- `ingestion_jobs`: Transactional job queue supporting atomic concurrency using `FOR UPDATE SKIP LOCKED`.
+```mermaid
+flowchart TD
+    RawSQL["Raw SQL Generated by LLM"] --> Gate1["Gate 1: Markdown Sanitizer\nRemoves codeblocks (```sql ... ```) and leading/trailing whitespace"]
+    
+    Gate1 --> Gate2["Gate 2: AST Parser & Statement Count\n• sqlglot.parse(read='postgres')\n• Enforces exactly 1 statement (blocks multi-query injection)\n• Verifies root AST is exp.Select (rejects INSERT, UPDATE, DELETE, DROP, ALTER)"]
+    
+    Gate2 -->|Violation| Reject["Raise SQLSecurityViolation\nRecord to sql_query_audit_logs with status=BLOCKED"]
+    
+    Gate2 -->|Pass| Gate3["Gate 3: Whitelist & Prohibited Functions\n• Tables must belong to: {departments, employees, vendors, contracts, invoices, operational_expenses}\n• Blocks system functions: pg_sleep, pg_read_file, current_user, inet_client_addr, etc."]
+    
+    Gate3 -->|Violation| Reject
+    
+    Gate3 -->|Pass| Gate4["Gate 4: Multi-Tenant AST Injection\n• Iterates through all referenced tables/aliases in AST\n• Injects: WHERE alias.tenant_id = :tenant_id"]
+    
+    Gate4 --> Gate5["Gate 5: Query Limit Enforcement\n• Inspects exp.Limit node\n• Injects LIMIT 100 if missing; clamps existing limit to <= 100"]
+    
+    Gate5 --> ReadOnly["Read-Only Transaction Sandbox\n• SET statement_timeout = 3000ms\n• SET TRANSACTION READ ONLY\n• Executes query & rolls back transaction to preserve session write capabilities"]
+    
+    ReadOnly --> AuditLog["Audit Logger\nCommits user prompt, generated SQL, sanitized SQL, exec duration, and row count"]
+    
+    AuditLog --> TabularOutput["Return Columns, Serialized Rows, and Execution Time"]
+```
 
-### 4.2 Operational Relational Tables
-- `departments`: Department codes (`ENG`, `MKT`, `FIN`, `HR`, `SEC`), names, and annual allocated budgets.
-- `employees`: Employee identifiers, department foreign keys, full names, corporate emails, role titles, employment statuses (`ACTIVE`, `TERMINATED`), and hire dates.
-- `vendors`: Approved third-party vendors with category classifications (`Software`, `Logistics`, `Consulting`, `Facilities`), risk ratings (`LOW`, `MEDIUM`, `HIGH`), and active flags.
-- `contracts`: Vendor master contracts with associated document IDs, contract values, validity date ranges, and renewal terms.
-- `invoices`: Invoices linked to contracts and vendors, tracking amounts, payment statuses (`PENDING`, `PAID`, `OVERDUE`), due dates, and settlement timestamps.
-- `operational_expenses`: Granular employee expenditure records with expense categories (`Travel`, `Software`, `Supplies`, `Meals`), amounts, approval flags, and dual foreign keys to employees and departments.
-- `sql_query_audit_logs`: Immutable audit trails logging user queries, raw generated SQL, sanitized SQL, execution durations, row counts, and error messages.
+### The 5 Security Gates Explained
+
+1. **Gate 1: Markdown Cleaning**: Normalizes LLM output and strips codeblock wrappers.
+2. **Gate 2: AST Parsing & Mutation Rejection**: Uses `sqlglot` to parse the query into an Abstract Syntax Tree. Only single-statement queries with a root `exp.Select` node are permitted. Any destructive DDL/DML statement (`DROP`, `ALTER`, `TRUNCATE`, `INSERT`, `UPDATE`, `DELETE`) is immediately rejected.
+3. **Gate 3: Schema Whitelist & Prohibited Functions**: Restricts accessible tables strictly to the 6 operational business tables. System administration and lateral movement functions (`pg_sleep`, `pg_read_file`, `version`, `current_user`, etc.) are blocked.
+4. **Gate 4: Multi-Tenant AST Injection**: Programmatically traverses the AST and injects `{alias}.tenant_id = '{user_tenant_id}'` into the `WHERE` clause for every referenced table, preventing cross-tenant data leakage.
+5. **Gate 5: Query Limit Enforcement**: Prevents denial-of-service through unbounded queries by injecting or capping `LIMIT 100`.
+
+**Execution Sandbox**: Queries execute under `SET TRANSACTION READ ONLY` with a strict `SET statement_timeout = 3000` (3 seconds), followed by an automatic rollback to keep the database session write-capable for audit logging.
 
 ---
 
-## 5. API Reference & Verification Guide
+## 7. Evaluation
 
-The backend exposes clean, versioned endpoints under `/api/v1/`.
+The platform includes an automated evaluation harness in `scripts/run_evaluation.py` and `src/services/evaluation.py` that benchmarks quality across three distinct pillars:
 
-### 5.1 Authentication Endpoints
-
-#### Register a New User
-```bash
-curl -X POST "http://localhost:8000/api/v1/auth/register" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "analyst@enterprise.com",
-    "password": "SecurePassword123!",
-    "full_name": "Senior Operations Analyst",
-    "tenant_id": "default_tenant",
-    "role": "analyst"
-  }'
+```mermaid
+flowchart LR
+    EvalHarness["Evaluation Suite\n(scripts/run_evaluation.py)"]
+    
+    EvalHarness --> Pillar1["Pillar 1: Deterministic Retrieval (L1)\n• Hit Rate@1, @3, @5\n• Mean Reciprocal Rank (MRR)"]
+    EvalHarness --> Pillar2["Pillar 2: Model-as-a-Judge (L2)\n• Claim-Level Faithfulness Score (0.0 - 1.0)\n• Answer Relevance Score (0.0 - 1.0)\n• Detection of Unsupported Claims"]
+    EvalHarness --> Pillar3["Pillar 3: Text-to-SQL Validation (L3)\n• AST Syntax Validity\n• Whitelist Compliance\n• Target Table Coverage vs. Golden Cases"]
 ```
 
-#### User Login & Token Generation
+### Running the Evaluation Suite
 ```bash
-curl -X POST "http://localhost:8000/api/v1/auth/login" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "admin@gmail.com",
-    "password": "Admin@12345",
-    "tenant_id": "default_tenant"
-  }'
+python scripts/run_evaluation.py
 ```
-*Response returns a signed JWT `access_token` and user profile.*
+
+### Metrics & Quality Gates
+- **Retrieval Quality**: Hit Rate@3 $\ge 0.70$, MRR $\ge 0.65$.
+- **Faithfulness & Groundedness**: Average faithfulness score $\ge 0.75$, with strict penalty deductions for claims not directly substantiated by retrieved context passages.
+- **SQL Integrity**: 100% AST pass rate, zero unauthorized table references, and correct foreign key join synthesis.
+- **Routing Accuracy**: Intent classification benchmarked against golden test prompts.
 
 ---
 
-### 5.2 Document Ingestion Endpoints
+## 8. Setup
 
-#### Upload and Enqueue Document
-```bash
-curl -X POST "http://localhost:8000/api/v1/documents/upload" \
-  -H "Authorization: Bearer <YOUR_JWT_TOKEN>" \
-  -F "file=@sample_documents/company_travel_policy.pdf" \
-  -F "title=Company Travel & Expense Policy 2026" \
-  -F "allowed_roles=admin,manager,analyst"
-```
+### 8.1 Prerequisites
+- **Python 3.12+**
+- **Node.js 20+ & npm**
+- **PostgreSQL 16** with the `pgvector` extension installed
+- **Google Gemini API Key**
 
-#### Check Document Processing Status
-```bash
-curl -X GET "http://localhost:8000/api/v1/documents/<DOCUMENT_UUID>/status" \
-  -H "Authorization: Bearer <YOUR_JWT_TOKEN>"
-```
-
----
-
-### 5.3 Hybrid Search & Grounded RAG Endpoints
-
-#### Two-Tier Hybrid Search (Dense + Sparse + RRF + Cross-Encoder)
-```bash
-curl -X POST "http://localhost:8000/api/v1/retrieval/search" \
-  -H "Authorization: Bearer <YOUR_JWT_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "What are the reimbursement limits for international flight travel?",
-    "top_k": 20,
-    "top_n": 5,
-    "score_threshold": 0.0,
-    "max_tokens": 4000
-  }'
-```
-
-#### Grounded RAG with Citation Lineage
-```bash
-curl -X POST "http://localhost:8000/api/v1/rag/ask" \
-  -H "Authorization: Bearer <YOUR_JWT_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question": "What is the maximum daily per diem meal allowance for domestic travel?",
-    "top_k": 20,
-    "top_n": 5,
-    "temperature": 0.0
-  }'
-```
-
-#### Real-Time SSE Token Streaming
-```bash
-curl -N -X POST "http://localhost:8000/api/v1/rag/stream" \
-  -H "Authorization: Bearer <YOUR_JWT_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question": "Summarize the termination clauses in our software vendor contracts."
-  }'
-```
-
----
-
-### 5.4 Text-to-SQL & Operational Data Endpoints
-
-#### Execute Natural Language SQL Query
-```bash
-curl -X POST "http://localhost:8000/api/v1/sql/query" \
-  -H "Authorization: Bearer <YOUR_JWT_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "List the top 3 departments with the highest total operational expenses this year",
-    "explain": true
-  }'
-```
-
-#### Inspect SQL Security Audit Logs
-```bash
-curl -X GET "http://localhost:8000/api/v1/sql/audit-logs?limit=10" \
-  -H "Authorization: Bearer <YOUR_JWT_TOKEN>"
-```
-
----
-
-### 5.5 Stateful Multi-Agent Endpoint
-
-#### Unified Enterprise Agent Query
-```bash
-curl -X POST "http://localhost:8000/api/v1/agent/query" \
-  -H "Authorization: Bearer <YOUR_JWT_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "Compare our official travel policy daily meal allowance with actual meal expense claims in the Engineering department to identify any non-compliant transactions.",
-    "force_route": null
-  }'
-```
-*Dispatches intent, invokes RAG and SQL concurrently via LangGraph, and synthesizes findings into an executive report with citation lineage and raw SQL records.*
-
----
-
-### 5.6 Administration & Demo Seeding
-
-#### Trigger Database Seeding via HTTP
-```bash
-curl -X POST "http://localhost:8000/api/v1/admin/seed"
-```
-*Idempotently seeds the administrator account and all relational demonstration entities.*
-
----
-
-## 6. Getting Started & Local Development
-
-### 6.1 Prerequisites
-- Python 3.12+
-- Node.js 20+ & npm
-- PostgreSQL 16 with the `pgvector` extension enabled
-- Google Gemini API Key
-
-### 6.2 Environment Configuration
+### 8.2 Environment Configuration
 Create a `.env` file in the project root:
 
 ```env
@@ -404,10 +312,10 @@ PROJECT_NAME="Enterprise RAG & Operations Intelligence"
 ENVIRONMENT="development"
 DEBUG=true
 
-# Database Configuration
+# Database Connection (Automatic postgresql+asyncpg adapter)
 DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/enterprise_rag"
 
-# Google Gemini API
+# Google Gemini Configuration
 GEMINI_API_KEY="your-gemini-api-key"
 ACTIVE_EMBEDDING_MODEL="gemini-embedding-001"
 EMBEDDING_DIMENSION=768
@@ -421,83 +329,129 @@ ACCESS_TOKEN_EXPIRE_MINUTES=1440
 LANGFUSE_ENABLED=false
 ```
 
-### 6.3 Local Installation & Execution
+### 8.3 Local Development Setup
 
-#### Backend Setup
 ```bash
-# 1. Create and activate a Python virtual environment
+# 1. Clone repository and set up Python virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
 
-# 2. Install dependencies
+# 2. Install backend dependencies in editable mode
 pip install -e .
 
-# 3. Seed operational business demo data
+# 3. Seed operational database entities and default admin
 python scripts/seed_operational_data.py
 
-# 4. Start the FastAPI development server
+# 4. Start FastAPI development server
 uvicorn src.main:app --reload --port 8000
 ```
 
-#### Frontend Setup
+In a separate terminal, start the Next.js frontend:
+
 ```bash
-# 1. Navigate to frontend workspace
+# 1. Navigate to frontend directory
 cd frontend
 
 # 2. Install dependencies
 npm install
 
-# 3. Launch Next.js Turbopack development server
+# 3. Launch development server with Turbopack
 npm run dev
 ```
-Open [http://localhost:3000](http://localhost:3000) to access the interactive web console.
+
+Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 #### Default Demo Credentials
-- **Username / Email**: `admin@gmail.com`
+- **Email**: `admin@gmail.com`
 - **Password**: `Admin@12345`
 - **Role**: `ADMIN`
 - **Tenant ID**: `default_tenant`
 
 ---
 
-## 7. Production Deployment
+### 8.4 Production Deployment
 
-### 7.1 Single-Container Embedded Worker Architecture
-In traditional deployments, background queues require dedicated Redis instances, Celery workers, and separate worker containers.
-
-This project implements an **embedded worker pattern** within the FastAPI lifespan (`src/main.py`). The application runs both the HTTP server and the asynchronous ingestion worker (`IngestionWorker`) concurrently inside a single container under 512MB RAM, along with an autonomous orphaned-job sweeper that unlocks stalled jobs after 60 minutes.
-
-### 7.2 Docker Compose Deployment
-Run the full production stack locally with a single command:
+#### Option A: Docker Compose (Local / Self-Hosted)
+Run the full production stack with PostgreSQL, pgvector, the FastAPI backend, and the Next.js frontend:
 
 ```bash
 docker compose up -d --build
 ```
 
-### 7.3 Render Blueprint (100% Free Tier Deployment)
-The repository includes a ready-to-use [`render.yaml`](./render.yaml) blueprint configuring:
-1. **Managed PostgreSQL Database** (Free Tier with vector support)
-2. **FastAPI Web Service** (Built from [`Dockerfile`](./Dockerfile) with embedded worker and `AUTO_SEED=true`)
-3. **Next.js Web Service** (Built from `./frontend` running Node.js)
+#### Option B: Render Blueprint (100% Free Tier Cloud Deployment)
+The repository includes an infrastructure-as-code [`render.yaml`](./render.yaml) blueprint that deploys:
+1. **Managed PostgreSQL Database** (Free Tier with vector extension)
+2. **FastAPI Web Service** (Built from [`Dockerfile`](./Dockerfile) with embedded background worker and `AUTO_SEED=true`)
+3. **Next.js Web Service** (Built from `./frontend` on Node runtime)
 
 To deploy:
 1. Push this repository to GitHub.
 2. In the Render Dashboard, select **New > Blueprint**.
-3. Link your repository. Render will automatically configure services and start deployment.
-4. Set your `GEMINI_API_KEY` in the environment settings.
-5. Log in with the default admin credentials once the build finishes.
+3. Connect your repository. Render automatically configures the database and web services.
+4. Input your `GEMINI_API_KEY` under the backend environment variables.
+5. Access your live application and sign in with the default administrator credentials.
 
 ---
 
-## 8. Evaluation & Quality Metrics
+## 9. Screenshots / Demo
 
-The platform includes an automated evaluation harness in `scripts/run_evaluation.py` and `src/services/evaluation.py`:
+The frontend is organized into 5 purpose-built studios accessible from the top navigation bar:
 
-```bash
-python scripts/run_evaluation.py
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│  ENTERPRISE INTELLIGENCE CONSOLE        [Unified Chat] [RAG] [SQL] [Ingestion] [Tracer] │
+└────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The evaluation suite validates three key dimensions:
-1. **Deterministic Retrieval Accuracy**: Evaluates Hit Rate@1, Hit Rate@3, Hit Rate@5, and Mean Reciprocal Rank (MRR).
-2. **Model-as-a-Judge Groundedness**: Uses a zero-temperature LLM judge to compute claim-level faithfulness scores and detect unsupported assertions.
-3. **SQL AST & Schema Validation**: Verifies that generated SQL queries parse to clean AST representations, reference only whitelisted tables, and match golden target columns.
+### 9.1 The Five Studio Views
+
+1. **Unified Chat Console**:
+   - Natural language interface that automatically classifies queries, displays execution route badges (`RAG`, `SQL`, `HYBRID_AGENT`), and provides execution time metrics, citation chips, and formatted tabular outputs.
+
+2. **Policy RAG Studio**:
+   - Dedicated document question-answering console featuring real-time Server-Sent Events (SSE) token streaming. Bracket citations (`[1]`, `[2]`) open an interactive citation drawer showing source files, page numbers, and exact passage snippets.
+
+3. **Text-to-SQL Studio**:
+   - Natural language database console with interactive query generation, raw SQL preview, operational schema explorer, tabular result sets, and real-time security audit log inspection.
+
+4. **Document Ingestion Hub**:
+   - Drag-and-drop document upload interface supporting PDF, DOCX, TXT, and Markdown files. Allows configuring RBAC access roles (`ADMIN`, `MANAGER`, `ANALYST`) and displays document lifecycle status (`PENDING` $\rightarrow$ `PROCESSING` $\rightarrow$ `ACTIVE`) with real-time chunk inspectors.
+
+5. **Agent Tracer**:
+   - Visual execution graph inspector for multi-step agent workflows. Displays sub-query decomposition, parallel task execution status, execution durations, and final executive synthesis.
+
+---
+
+### 9.2 Practical Demo Scenarios
+
+#### Scenario A: Unstructured Policy Retrieval (RAG Route)
+- **User Prompt**: *"What are the meal allowance limits and lodging rules for domestic travel?"*
+- **Router Classification**: `RAG` (~0ms heuristic match on policy keywords).
+- **Execution**: Hybrid search (dense pgvector + sparse TSVECTOR) merged with RRF and re-ranked via FlashRank.
+- **Output**: Grounded answer with interactive citations:
+  > *"According to the Company Travel Policy, the maximum domestic daily meal allowance is $75 per day [1]. Lodging expenses must not exceed $200 per night for standard business travel [2]."*
+
+#### Scenario B: Operational Database Query (SQL Route)
+- **User Prompt**: *"What is the annual budget of the Engineering department and how many active employees work there?"*
+- **Router Classification**: `SQL` (~0ms heuristic match on budget/aggregation keywords).
+- **Generated & Sanitized SQL**:
+  ```sql
+  SELECT d.name, d.annual_budget, COUNT(e.id) AS active_employee_count
+  FROM departments AS d
+  JOIN employees AS e ON e.department_id = d.id
+  WHERE d.code = 'ENG' AND e.employment_status = 'ACTIVE' AND d.tenant_id = 'default_tenant' AND e.tenant_id = 'default_tenant'
+  GROUP BY d.name, d.annual_budget
+  LIMIT 100;
+  ```
+- **Output**: Formatted interactive data table + natural language explanation summary.
+
+#### Scenario C: Multi-Step Compliance Audit (HYBRID_AGENT Route)
+- **User Prompt**: *"Compare our travel policy meal allowance limits with actual meal expenses in the Engineering department to identify any non-compliant claims."*
+- **Router Classification**: `HYBRID_AGENT` (cross-referencing intent detected).
+- **Orchestration Execution**:
+  1. Planner decomposes inquiry into:
+     - `document_question`: *"What is the daily meal allowance limit in the company travel policy?"*
+     - `database_question`: *"List all operational expenses in the Meals category for the Engineering department."*
+  2. Concurrent execution (`asyncio.gather`) runs document retrieval and sandboxed SQL query in parallel.
+  3. Synthesizer cross-references policy limit ($75/day) against database expense rows.
+- **Output**: Executive briefing highlighting compliant and non-compliant expense claims, with direct citations to the policy document and underlying relational expense rows.
