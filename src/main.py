@@ -117,9 +117,9 @@ def create_application() -> FastAPI:
     """FastAPI application factory."""
     app = FastAPI(
         title=settings.PROJECT_NAME,
-        docs_url="/docs" if settings.ENV=="development" else None,
-        redoc_url="/redoc" if settings.ENV=="development" else None,
-        openapi_url="/openapi.json" if settings.ENV=="development" else None,
+        docs_url="/docs" if settings.ENVIRONMENT=="development" else None,
+        redoc_url="/redoc" if settings.ENVIRONMENT=="development" else None,
+        openapi_url="/openapi.json" if settings.ENVIRONMENT=="development" else None,
         version="0.1.0",
         description="Dual-Intelligence Enterprise Knowledge & Operations Platform",
         lifespan=lifespan,
