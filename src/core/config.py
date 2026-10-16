@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     # Project Information
     PROJECT_NAME: str = "Enterprise Knowledge & Operations Intelligence Platform"
     ENVIRONMENT: Literal["development", "staging", "production"] = "development"
-    DEBUG: bool = True
+    DEBUG: bool = False
 
     # Database Configuration (PostgreSQL 16 + pgvector)
     DATABASE_URL: str = Field(
