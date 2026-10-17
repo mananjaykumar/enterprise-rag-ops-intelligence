@@ -228,6 +228,21 @@ class IngestionService:
                 active_doc.status = DocumentLifecycleStatus.ACTIVE
                 active_doc.is_active = True
                 await session.commit()
+                
+            # FILE CLEANUP AFTER SUCCESS
+            # ==========================================
+            try:
+                if doc.storage_path and os.path.exists(doc.storage_path):
+                    os.remove(doc.storage_path)
+                    logger.info("Local cleanup done: Deleted file '%s'", doc.storage_path)
+            except Exception as cleanup_exc:
+                logger.warning("Cleanup failed for '%s': %s", doc.storage_path, cleanup_exc)
+            # ==========================================
+
+            logger.info(
+                "Successfully indexed %d chunks for '%s'", len(chunks_to_insert), doc.filename
+            )
+            return len(chunks_to_insert)
 
             logger.info(
                 "Successfully indexed %d chunks for '%s'", len(chunks_to_insert), doc.filename
