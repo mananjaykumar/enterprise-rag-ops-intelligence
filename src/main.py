@@ -20,9 +20,9 @@ from src.api.v1.sql import router as sql_router
 from src.core.config import get_settings
 from src.db.base import Base
 from src.db.session import AsyncSessionLocal, engine
+from src.infrastructure.queue.postgres import PostgresJobQueueClient
 from src.services.observability import get_observability_service
 from src.workers.ingestion_worker import IngestionWorker
-from src.infrastructure.queue.postgres import PostgresJobQueueClient 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("enterprise_rag")
@@ -31,17 +31,23 @@ settings = get_settings()
 
 sweeper_task: asyncio.Task | None = None
 
-async def start_orphaned_jobs_sweeper(queue_client: PostgresJobQueueClient, interval_seconds: int = 300) -> None:
+
+async def start_orphaned_jobs_sweeper(
+    queue_client: PostgresJobQueueClient, interval_seconds: int = 300
+) -> None:
     """Autonomous background loop that unlocks zombie processing tasks periodically."""
     while True:
         try:
             logger.info("Running periodic background check for orphaned processing tasks...")
             rescued_count = await queue_client.clear_orphaned_jobs(timeout_minutes=60)
             if rescued_count > 0:
-                logger.warning("Successfully rescued %d zombie tasks back into the active queue pipeline.", rescued_count)
+                logger.warning(
+                    "Successfully rescued %d zombie tasks back into the active queue pipeline.",
+                    rescued_count,
+                )
         except Exception as err:
             logger.error("Orphaned job cleaner loop encountered an unexpected failure: %s", err)
-        
+
         await asyncio.sleep(interval_seconds)
 
 
@@ -70,6 +76,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         if os.getenv("AUTO_SEED", "false").lower() == "true":
             try:
                 from scripts.seed_operational_data import seed_admin_user, seed_operational_entities
+
                 async with AsyncSessionLocal() as session:
                     await seed_admin_user(session)
                     counts = await seed_operational_entities(session)
@@ -88,7 +95,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     queue_client = PostgresJobQueueClient()
     try:
         # Initializing the autonomous sweeper loop task reference
-        sweeper_task = asyncio.create_task(start_orphaned_jobs_sweeper(queue_client, interval_seconds=300))
+        sweeper_task = asyncio.create_task(
+            start_orphaned_jobs_sweeper(queue_client, interval_seconds=300)
+        )
         logger.info("Autonomous Self-Healing Orphaned Jobs Sweeper loop initialized.")
 
         worker = IngestionWorker()
@@ -117,9 +126,9 @@ def create_application() -> FastAPI:
     """FastAPI application factory."""
     app = FastAPI(
         title=settings.PROJECT_NAME,
-        #docs_url="/docs" if settings.ENVIRONMENT=="development" else None,
-        #redoc_url="/redoc" if settings.ENVIRONMENT=="development" else None,
-        #openapi_url="/openapi.json" if settings.ENVIRONMENT=="development" else None,
+        # docs_url="/docs" if settings.ENVIRONMENT=="development" else None,
+        # redoc_url="/redoc" if settings.ENVIRONMENT=="development" else None,
+        # openapi_url="/openapi.json" if settings.ENVIRONMENT=="development" else None,
         version="0.1.0",
         description="Dual-Intelligence Enterprise Knowledge & Operations Platform",
         lifespan=lifespan,
@@ -152,6 +161,7 @@ def create_application() -> FastAPI:
                 seed_admin_user,
                 seed_operational_entities,
             )
+
             async with AsyncSessionLocal() as session:
                 await seed_admin_user(session)
                 await clear_operational_data(session)

@@ -5,8 +5,8 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.db.models.job import IngestionJob, JobStatus
 from src.db.models.document import Document, DocumentLifecycleStatus
+from src.db.models.job import IngestionJob, JobStatus
 from src.db.session import AsyncSessionLocal
 from src.domain.interfaces.queue import BaseJobQueueClient
 
@@ -116,20 +116,20 @@ class PostgresJobQueueClient(BaseJobQueueClient):
                     # PERMANENT FAILURE: Hard stop after max attempts exhausted
                     job.status = JobStatus.FAILED
                     job.error_message = f"Max retries exhausted. Final Error: {error_message}"
-                
+
                 if job.document_id:
-                        doc_stmt = (
-                            update(Document)
-                            .where(Document.id == job.document_id)
-                            .values(
-                                status=DocumentLifecycleStatus.FAILED,
-                                error_log=f"Job execution permanently failed after {job.max_attempts} retries."
-                            )
+                    doc_stmt = (
+                        update(Document)
+                        .where(Document.id == job.document_id)
+                        .values(
+                            status=DocumentLifecycleStatus.FAILED,
+                            error_log=f"Job execution permanently failed after {job.max_attempts} retries.",
                         )
-                        await session.execute(doc_stmt)
-                        
+                    )
+                    await session.execute(doc_stmt)
+
                 await session.commit()
-                
+
             #     stmt = (
             #     update(IngestionJob)
             #     .where(IngestionJob.id == uuid.UUID(job_id))
@@ -151,20 +151,16 @@ class PostgresJobQueueClient(BaseJobQueueClient):
         and safely releases their distributed locks back into the QUEUED state.
         """
         threshold_time = datetime.now(UTC) - timedelta(minutes=timeout_minutes)
-        
+
         async with self.session_factory() as session:
             try:
                 stmt = (
                     update(IngestionJob)
                     .where(
                         IngestionJob.status == JobStatus.PROCESSING,
-                        IngestionJob.locked_at < threshold_time
+                        IngestionJob.locked_at < threshold_time,
                     )
-                    .values(
-                        status=JobStatus.QUEUED,
-                        locked_by=None,
-                        locked_at=None
-                    )
+                    .values(status=JobStatus.QUEUED, locked_by=None, locked_at=None)
                 )
                 result = await session.execute(stmt)
                 await session.commit()
