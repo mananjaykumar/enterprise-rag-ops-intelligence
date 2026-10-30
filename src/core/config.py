@@ -26,12 +26,15 @@ class Settings(BaseSettings):
     @field_validator("DATABASE_URL", mode="before")
     @classmethod
     def assemble_async_db_url(cls, v: str) -> str:
-        """Ensures the connection URI uses asyncpg driver on Render, Heroku, or standard cloud."""
+        """Ensures the connection URI uses asyncpg driver and handles cloud pooler parameters."""
         if isinstance(v, str):
             if v.startswith("postgres://"):
-                return v.replace("postgres://", "postgresql+asyncpg://", 1)
+                v = v.replace("postgres://", "postgresql+asyncpg://", 1)
             elif v.startswith("postgresql://") and not v.startswith("postgresql+asyncpg://"):
-                return v.replace("postgresql://", "postgresql+asyncpg://", 1)
+                v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
+            # asyncpg does not accept sslmode query parameter, convert to ssl if present
+            if "sslmode=" in v:
+                v = v.replace("sslmode=", "ssl=")
         return v
 
     # JWT & Security Configuration

@@ -11,13 +11,14 @@ from src.core.config import get_settings
 
 settings = get_settings()
 
-# 1. Initialize Async Engine with connection pooling
+# 1. Initialize Async Engine with connection pooling & Supabase pooler compatibility
 engine: AsyncEngine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.DEBUG,
     pool_size=5,
     max_overflow=10,
     pool_pre_ping=True,  # Proactively pings connection to drop stale connections
+    connect_args={"statement_cache_size": 0},  # Required for Supabase transaction pooler (Supavisor)
 )
 
 # 2. Session Factory
